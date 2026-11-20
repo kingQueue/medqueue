@@ -84,28 +84,48 @@ public class Dashboard : Form {
   }
   Status();
  }
- static string[] Prompt(IWin32Window owner,string title,string[] labels,string[] values=null,int secret=-1,int multiline=-1,int readOnly=-1){
+ static string[] Prompt(IWin32Window owner,string title,string[] labels,string[] values=null,int secret=-1,int multiline=-1,int readOnly=-1,int confirmSecret=-1,Func<string[],string> validate=null){
   using(var dialog=new Form{Text=title,Width=660,Height=220+labels.Length*55+(multiline<0?0:120),StartPosition=FormStartPosition.CenterParent,MinimizeBox=false,MaximizeBox=false,Font=new Font("Segoe UI",10)}){
    var layout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,AutoScroll=true,Padding=new Padding(18)};
    var boxes=new TextBox[labels.Length];
    for(int i=0;i<labels.Length;i++){
     layout.Controls.Add(new Label{Text=labels[i],AutoSize=true});
-    var box=new TextBox{Text=values==null?"":values[i],Dock=DockStyle.Top,UseSystemPasswordChar=i==secret,Multiline=i==multiline,ReadOnly=i==readOnly,MaxLength=16000};
+    var box=new TextBox{Text=values==null?"":values[i],Dock=DockStyle.Top,UseSystemPasswordChar=i==secret||i==confirmSecret,Multiline=i==multiline,ReadOnly=i==readOnly,MaxLength=16000};
     if(i==multiline){box.Height=135;box.ScrollBars=ScrollBars.Vertical;}
     boxes[i]=box;layout.Controls.Add(box);
    }
+   var error=new Label{AutoSize=true,ForeColor=Color.DarkRed};
+   if(confirmSecret>=0){
+    var show=new CheckBox{Text="Show passwords",AutoSize=true};
+    show.CheckedChanged+=(s,e)=>{boxes[secret].UseSystemPasswordChar=!show.Checked;boxes[confirmSecret].UseSystemPasswordChar=!show.Checked;};
+    layout.Controls.Add(show);
+   }
+   if(validate!=null)layout.Controls.Add(error);
    var buttons=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};
-   var ok=new Button{Text="Continue",DialogResult=DialogResult.OK,AutoSize=true};var cancel=new Button{Text="Cancel",DialogResult=DialogResult.Cancel,AutoSize=true};
+   var ok=new Button{Text="Continue",AutoSize=true};var cancel=new Button{Text="Cancel",DialogResult=DialogResult.Cancel,AutoSize=true};
+   ok.Click+=(s,e)=>{
+    string problem=validate==null?null:validate(boxes.Select(x=>x.Text).ToArray());
+    if(problem==null)dialog.DialogResult=DialogResult.OK;
+    else error.Text=problem;
+   };
    buttons.Controls.Add(ok);buttons.Controls.Add(cancel);layout.Controls.Add(buttons);dialog.Controls.Add(layout);dialog.AcceptButton=ok;dialog.CancelButton=cancel;
    using(var timeout=new Timer{Interval=180000}){timeout.Tick+=(s,e)=>dialog.Close();timeout.Start();if(dialog.ShowDialog(owner)!=DialogResult.OK)return null;}
    return boxes.Select(x=>x.Text).ToArray();
   }
  }
  void Account(bool first){
-  string[] a=Prompt(this,first?"Create administrator":"Add provider",new[]{"Unique provider username","Password (at least 14 characters)"},null,1);
+  string actor=provider;
+  string[] a=Prompt(this,first?"Create practice administrator":"Add provider",
+   new[]{"Unique provider username",Common.PasswordRequirements,"Confirm password"},secret:1,confirmSecret:2,validate:entries=>{
+    if(!System.Text.RegularExpressions.Regex.IsMatch(entries[0].Trim().ToLowerInvariant(),@"\A[a-z0-9_.-]{3,64}\z"))
+     return "Use 3–64 letters, numbers, periods, underscores or hyphens for the username.";
+    if(!Common.IsNewPasswordValid(entries[1]))return "The password must meet the requirements shown above.";
+    if(!String.Equals(entries[1],entries[2],StringComparison.Ordinal))return "The passwords do not match.";
+    return null;
+   });
   if(a==null)return;
+  if(!first&&(provider!=actor||!admin||DateTime.UtcNow>expires))return;
   string name=a[0].Trim().ToLowerInvariant();
-  if(!System.Text.RegularExpressions.Regex.IsMatch(name,"^[a-z0-9_.-]{3,64}$")||a[1].Length<14||a[1].Length>256){Say("Use a 3–64 character username and a 14–256 character password.");return;}
   var credential=new Provider{Name=name,Salt=Common.Secret(16),Admin=first};credential.Hash=Common.Hash(a[1],credential.Salt);
   vault.Save(s=>{if(s.Providers.Any(p=>p.Name==name))throw new InvalidOperationException();s.Providers.Add(credential);s.Audit(provider??name,"provider created",name);});
   Draw();Say("Account created");

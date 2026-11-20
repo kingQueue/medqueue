@@ -18,6 +18,8 @@ The current installer requires an existing volume. A size-limited virtual disk f
 
 Create the first practice administrator when opening the workspace. Create named provider accounts through **Add provider**. The first account is the practice administrator, so IT should provision the workspace before making it available at the check-in workstation.
 
+New administrator and provider passwords must be 14–256 characters and include an uppercase letter (`A–Z`), a digit (`0–9`), and at least one of `!@#_+-=`. Enter the same password twice. **Show passwords** reveals both entries while you check them.
+
 ## Run a fictional outage drill
 
 1. Sign in as administrator, open **Connect cloud**, and select **Start fictional training clinic**. Two fictional visits enter the vault. A third visit sits outside the download window.

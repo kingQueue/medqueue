@@ -7,6 +7,12 @@ using MedQueue;
 class Smoke {
  static void Check(bool condition,string message){if(!condition)throw new Exception(message);}
  static void Main(){
+  Check(Common.IsNewPasswordValid("PracticeAdmin9!"),"Valid password rejected.");
+  Check(!Common.IsNewPasswordValid("practiceadmin9!"),"Password missing a capital letter accepted.");
+  Check(!Common.IsNewPasswordValid("PracticeAdminA!"),"Password missing a number accepted.");
+  Check(!Common.IsNewPasswordValid("PracticeAdmin99"),"Password missing a symbol accepted.");
+  Check(!Common.IsNewPasswordValid("PracticeAdmin9!<"),"Unsupported punctuation accepted.");
+  Check(!Common.IsNewPasswordValid("Admin9!")&&!Common.IsNewPasswordValid(new String('A',254)+"a9!"),"Password length limits failed.");
   string root=Path.Combine(Environment.CurrentDirectory,"dist","test-"+Common.Id());
   Directory.CreateDirectory(Path.Combine(root,"local"));Directory.CreateDirectory(Path.Combine(root,"cloud"));
   string localPath=Path.Combine(root,"local");string visitId,eventId;

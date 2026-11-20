@@ -76,6 +76,15 @@ public static class Common {
   Directory.CreateDirectory(folder,acl);
  }
  public static string Secret(int bytes){var b=new byte[bytes];using(var rng=RandomNumberGenerator.Create())rng.GetBytes(b);return Convert.ToBase64String(b);}
+ const string PasswordSymbols="!@#_+-=";
+ public const string PasswordRequirements="Password (14–256 characters, with A–Z, 0–9 and one of "+PasswordSymbols+")";
+ public static bool IsNewPasswordValid(string password){
+  return password!=null&&password.Length>=14&&password.Length<=256
+   &&password.Any(c=>c>='A'&&c<='Z')
+   &&password.Any(c=>c>='0'&&c<='9')
+   &&password.Any(c=>PasswordSymbols.IndexOf(c)>=0)
+   &&password.All(c=>char.IsLetterOrDigit(c)||PasswordSymbols.IndexOf(c)>=0);
+ }
  public static string Hash(string password,string salt){using(var k=new Rfc2898DeriveBytes(password,Convert.FromBase64String(salt),600000,HashAlgorithmName.SHA256))return Convert.ToBase64String(k.GetBytes(32));}
  public static bool Equal(string a,string b){if(a==null||b==null||a.Length!=b.Length)return false;int diff=0;for(int i=0;i<a.Length;i++)diff|=a[i]^b[i];return diff==0;}
 }
