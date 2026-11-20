@@ -6,6 +6,14 @@ MedQueue is a Windows desktop pilot for clinic downtime. A practice workstation 
 
 Download the [Windows installer](dist-download/MedQueueSetup.exe) and open it while signed into the designated Windows account. Choose a fixed NTFS volume with BitLocker protection on and encryption complete. Setup places the executable and vault on that drive and adds a Start menu shortcut. The designated Windows account must have permission to create the workspace and query the Windows BitLocker WMI provider. Both setup and startup check BitLocker. The installer is unsigned.
 
+### Choose where MedQueue stores its vault
+
+Selecting a drive in Setup does not encrypt, format, or repartition it. Setup verifies that the selected Windows volume is already fully encrypted with BitLocker and that protection is on. It then creates the MedQueue workspace folder on that volume. The vault has an additional layer of encryption tied to the designated Windows account.
+
+To dedicate a small amount of disk space to MedQueue, have IT provision a separate fixed NTFS volume sized for the practice's charts and queued changes. For example, IT could assign a 10 GB volume the letter `M:`, enable BitLocker on that volume, and wait for encryption to finish before selecting it in Setup. BitLocker protects the selected volume, and the other volumes on the same physical disk keep their existing settings. [Microsoft BitLocker documentation](https://learn.microsoft.com/en-us/windows/security/operating-system-security/data-protection/bitlocker/)
+
+The current installer requires an existing volume. A size-limited virtual disk file is a possible future setup option for allocating dedicated storage without repartitioning the physical disk. Any such workflow would need to verify that the virtual volume can be mounted and unlocked after a restart, including during an outage. [Microsoft virtual disk documentation](https://learn.microsoft.com/en-us/windows-server/storage/disk-management/manage-virtual-hard-disks)
+
 Create the first practice administrator when opening the workspace. Create named provider accounts through **Add provider**. The first account is the practice administrator, so IT should provision the workspace before making it available at the check-in workstation.
 
 ## Run a fictional outage drill
