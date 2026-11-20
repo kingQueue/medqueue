@@ -11,6 +11,7 @@ using System.Diagnostics;
 
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Runtime.InteropServices;
 
 namespace MedQueue {
 public class DriveVerificationException : IOException {
@@ -89,6 +90,38 @@ public static class Common {
  public static bool Equal(string a,string b){if(a==null||b==null||a.Length!=b.Length)return false;int diff=0;for(int i=0;i<a.Length;i++)diff|=a[i]^b[i];return diff==0;}
 }
 public class Provider {public string Name,Salt,Hash,LockedUntil;public int Failures;public bool Admin;}
+public static class ProviderAccounts {
+ public static bool ValidName(string name){
+  return System.Text.RegularExpressions.Regex.IsMatch(name,@"\A[a-z0-9_.-]{3,64}\z");
+ }
+ public static void Create(Vault vault,string actor,string name,string password,bool first){
+  if(!ValidName(name)||!Common.IsNewPasswordValid(password))throw new ArgumentException("Invalid account credentials.");
+  var account=new Provider{Name=name,Salt=Common.Secret(16),Admin=first};
+  account.Hash=Common.Hash(password,account.Salt);
+  vault.Save(s=>{
+   if(first?s.Providers.Count!=0:!s.Providers.Any(p=>p.Name==actor&&p.Admin))throw new InvalidOperationException("Account creation is unavailable.");
+   if(s.Providers.Any(p=>p.Name==name))throw new InvalidOperationException("The provider username is already in use.");
+   s.Providers.Add(account);
+   s.Audit(actor??name,"provider created",name);
+  });
+ }
+ public static Provider SignIn(Vault vault,string name,string password){
+  Provider authenticated=null;
+  vault.Save(s=>{
+   var provider=s.Providers.Find(p=>p.Name==name);
+   string guess=Common.Hash(password,provider==null?Convert.ToBase64String(new byte[16]):provider.Salt);
+   if(provider!=null&&(provider.LockedUntil==null||Common.Utc(provider.LockedUntil)<=DateTime.UtcNow)){
+    if(Common.Equal(guess,provider.Hash)){
+     provider.Failures=0;provider.LockedUntil=null;authenticated=provider;
+    }else if(++provider.Failures>=5){
+     provider.Failures=0;provider.LockedUntil=DateTime.UtcNow.AddMinutes(10).ToString("o");
+    }
+   }
+   s.Audit(provider==null?"unknown":name,authenticated==null?"sign-in failed":"sign in",null);
+  });
+  return authenticated;
+ }
+}
 public class FormDef {public string Id,Title,Body;public int Version;}
 public class Record {public string Id,Kind,Title,Body;}
 public class Visit {public string Id,PatientId,Name,Start,Revision,CheckedIn,PassHash,PassUntil;public bool Active;public List<Record> Records=new List<Record>();}
@@ -104,11 +137,22 @@ public class State {
  }
 }
 public class Vault : IDisposable {
+ const int ReplaceExisting=1;
+ const int WriteThrough=8;
+ [DllImport("kernel32.dll",EntryPoint="MoveFileExW",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]
+ [return: MarshalAs(UnmanagedType.Bool)]
+ static extern bool MoveFileEx(string source,string destination,int flags);
+
  readonly string file;readonly FileStream lease;readonly object gate=new object();
  public Vault(string folder){file=Path.Combine(folder,"practice.vault");lease=new FileStream(Path.Combine(folder,"workspace.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);if(!File.Exists(file)){if(File.Exists(file+".new")||File.Exists(file+".initialized"))throw new IOException("Vault missing. Recover the practice backup.");Write(new State());File.WriteAllText(file+".initialized","1");}}
  State Read(){var bytes=ProtectedData.Unprotect(File.ReadAllBytes(file),null,DataProtectionScope.CurrentUser);try{var s=Common.Json.Deserialize<State>(Encoding.UTF8.GetString(bytes));if(s==null||s.Format!=1)throw new IOException("Unsupported vault.");return s;}finally{Array.Clear(bytes,0,bytes.Length);}}
  void Write(State s){var plain=Encoding.UTF8.GetBytes(Common.Json.Serialize(s));byte[] enc;try{enc=ProtectedData.Protect(plain,null,DataProtectionScope.CurrentUser);}finally{Array.Clear(plain,0,plain.Length);}
- using(var f=new FileStream(file+".new",FileMode.Create,FileAccess.Write,FileShare.None)){f.Write(enc,0,enc.Length);f.Flush(true);}if(File.Exists(file))File.Replace(file+".new",file,null);else File.Move(file+".new",file);}
+  string staged=file+".new";
+  using(var f=new FileStream(staged,FileMode.Create,FileAccess.Write,FileShare.None)){f.Write(enc,0,enc.Length);f.Flush(true);}
+  // Replace with a same-directory rename so the new file retains the workspace's private ACL.
+  if(!MoveFileEx(staged,file,ReplaceExisting|WriteThrough))
+   throw new IOException("Could not commit the encrypted vault.",new Win32Exception(Marshal.GetLastWin32Error()));
+ }
  public T View<T>(Func<State,T> op){lock(gate)return op(Read());}
  public void Save(Action<State> op){lock(gate){var s=Read();op(s);Write(s);}}
  public void Dispose(){lock(gate)lease.Dispose();}

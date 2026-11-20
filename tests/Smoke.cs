@@ -19,6 +19,7 @@ class Smoke {
   using(var cloud=new Vault(Path.Combine(root,"cloud"))){
    var dummy=new Dummy(cloud);dummy.Seed();
    using(var vault=new Vault(localPath)){
+    ProviderAccounts.Create(vault,null,"training-admin","PracticeAdmin9!",true);
     new Sync(vault).Run(dummy,"demo");
     Check(vault.View(s=>s.Visits.Count)==2,"Only the next 24 hours should load.");
     visitId=vault.View(s=>s.Visits.First().Id);
@@ -32,6 +33,9 @@ class Smoke {
    string bytes=System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(localPath,"practice.vault")));
    Check(!bytes.Contains("Training medication")&&!bytes.Contains("Fictional instructions"),"Plaintext found on disk.");
    using(var vault=new Vault(localPath)){
+    Check(ProviderAccounts.SignIn(vault,"training-admin","PracticeAdmin9?")==null,"Incorrect password accepted.");
+    var admin=ProviderAccounts.SignIn(vault,"training-admin","PracticeAdmin9!");
+    Check(admin!=null&&admin.Admin,"Persisted administrator could not sign in.");
     var sync=new Sync(vault);
     Check(vault.View(s=>s.Queue.Count)==2,"Queued edits must survive restart.");
     try{sync.Run(dummy,"other");throw new Exception("Practice mismatch accepted.");}catch(IOException){}

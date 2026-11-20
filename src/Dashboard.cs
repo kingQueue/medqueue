@@ -55,6 +55,7 @@ public class Dashboard : Form {
  void Add(string label,Action command){
   var b=new Button{Text=label,AutoSize=true,Padding=new Padding(8,2,8,2),Height=34,FlatStyle=FlatStyle.Flat,BackColor=Color.White};
   b.Click+=(s,e)=>{try{if(provider!=null||patientVisit!=null){if(DateTime.UtcNow>expires){Logout();return;}Touch();}command();}
+   catch(IOException){Say("The workspace could not be saved or opened. Check that the drive is available and writable.");}
    catch(Exception){Say("Action failed. Check the workspace or try again.");}};menu.Controls.Add(b);
  }
  void Touch(){expires=DateTime.UtcNow.AddMinutes(5);}
@@ -117,7 +118,7 @@ public class Dashboard : Form {
   string actor=provider;
   string[] a=Prompt(this,first?"Create practice administrator":"Add provider",
    new[]{"Unique provider username",Common.PasswordRequirements,"Confirm password"},secret:1,confirmSecret:2,validate:entries=>{
-    if(!System.Text.RegularExpressions.Regex.IsMatch(entries[0].Trim().ToLowerInvariant(),@"\A[a-z0-9_.-]{3,64}\z"))
+    if(!ProviderAccounts.ValidName(entries[0].Trim().ToLowerInvariant()))
      return "Use 3–64 letters, numbers, periods, underscores or hyphens for the username.";
     if(!Common.IsNewPasswordValid(entries[1]))return "The password must meet the requirements shown above.";
     if(!String.Equals(entries[1],entries[2],StringComparison.Ordinal))return "The passwords do not match.";
@@ -126,25 +127,14 @@ public class Dashboard : Form {
   if(a==null)return;
   if(!first&&(provider!=actor||!admin||DateTime.UtcNow>expires))return;
   string name=a[0].Trim().ToLowerInvariant();
-  var credential=new Provider{Name=name,Salt=Common.Secret(16),Admin=first};credential.Hash=Common.Hash(a[1],credential.Salt);
-  vault.Save(s=>{if(s.Providers.Any(p=>p.Name==name))throw new InvalidOperationException();s.Providers.Add(credential);s.Audit(provider??name,"provider created",name);});
+  ProviderAccounts.Create(vault,actor,name,a[1],first);
   Draw();Say("Account created");
  }
  void Login(){
   string[] a=Prompt(this,"Provider sign in",new[]{"Username","Password"},null,1);if(a==null)return;
-  string name=a[0].Trim().ToLowerInvariant();bool ok=false,isAdmin=false;
-  vault.Save(s=>{
-   var p=s.Providers.Find(x=>x.Name==name);
-   string guess=Common.Hash(a[1],p==null?Convert.ToBase64String(new byte[16]):p.Salt);
-   if(p!=null&&(p.LockedUntil==null||Common.Utc(p.LockedUntil)<=DateTime.UtcNow)){
-    ok=Common.Equal(guess,p.Hash);
-    if(ok){p.Failures=0;p.LockedUntil=null;isAdmin=p.Admin;}
-    else if(++p.Failures>=5){p.Failures=0;p.LockedUntil=DateTime.UtcNow.AddMinutes(10).ToString("o");}
-   }
-   s.Audit(p==null?"unknown":name,ok?"sign in":"sign-in failed",null);
-  });
-  if(!ok){Say("Sign-in failed. Check credentials or wait for the lockout to expire.");return;}
-  provider=name;admin=isAdmin;Touch();Draw();Say("Signed in");
+  var account=ProviderAccounts.SignIn(vault,a[0].Trim().ToLowerInvariant(),a[1]);
+  if(account==null){Say("Sign-in failed. Check credentials or wait for the lockout to expire.");return;}
+  provider=account.Name;admin=account.Admin;Touch();Draw();Say("Signed in");
  }
  void Populate(){
   var previous=SelectedVisit;var previouslySelected=SelectedRecord;
