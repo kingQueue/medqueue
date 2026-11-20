@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 Push-Location $PSScriptRoot
 try {
     $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    $refs = @('/r:System.Security.dll','/r:System.Management.dll','/r:System.Web.Extensions.dll')
+    $refs = @('/r:System.Security.dll','/r:System.Web.Extensions.dll')
     New-Item -ItemType Directory -Force dist | Out-Null
     & $compiler /nologo /target:winexe /out:dist\MedQueue.exe @refs src\Core.cs src\Cloud.cs src\Dashboard.cs
     if ($LASTEXITCODE) { throw 'App build failed.' }

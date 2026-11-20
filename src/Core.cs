@@ -5,13 +5,17 @@ using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web.Script.Serialization;
-using System.Management;
+using System.ComponentModel;
+using System.Diagnostics;
 
 
 using System.Security.AccessControl;
 using System.Security.Principal;
 
 namespace MedQueue {
+public class DriveVerificationException : IOException {
+ public DriveVerificationException(string message) : base(message){}
+}
 public static class Common {
  public static JavaScriptSerializer Json { get { return new JavaScriptSerializer { MaxJsonLength=67108864 }; } }
  public static string Id(){return Guid.NewGuid().ToString("N");}
@@ -19,17 +23,50 @@ public static class Common {
  public static string Now(){return DateTime.UtcNow.ToString("o");}
  public static bool Eligible(string stamp,DateTime now){DateTime t=Utc(stamp);return t>=now && t<now.AddHours(24);}
  public static void CheckDrive(string root){
-  DriveInfo d=new DriveInfo(root);
-  if(d.DriveType!=DriveType.Fixed || d.DriveFormat!="NTFS") throw new IOException("Select a fixed NTFS drive.");
-  using(var q=new ManagementObjectSearcher(@"root\CIMV2\Security\MicrosoftVolumeEncryption","SELECT * FROM Win32_EncryptableVolume WHERE DriveLetter='"+d.Name.Substring(0,2)+"'")){
-   foreach(ManagementObject v in q.Get()){
-    using(var p=v.InvokeMethod("GetProtectionStatus",null,null))
-    using(var c=v.InvokeMethod("GetConversionStatus",null,null)){
-     if(Convert.ToUInt32(p["ReturnValue"])==0 && Convert.ToUInt32(c["ReturnValue"])==0 && Convert.ToInt32(p["ProtectionStatus"])==1 && Convert.ToInt32(c["ConversionStatus"])==1)return;
-    }
+  var drive=new DriveInfo(root);
+  string letter=drive.Name.Substring(0,2).ToUpperInvariant();
+  if(!System.Text.RegularExpressions.Regex.IsMatch(letter,@"\A[A-Z]:\z"))
+   throw new DriveVerificationException("Choose a local drive with a drive letter.");
+  if(!drive.IsReady)
+   throw new DriveVerificationException("Open "+letter+" in File Explorer and unlock it with Windows, then try again.");
+  if(drive.DriveType!=DriveType.Fixed||drive.DriveFormat!="NTFS")
+   throw new DriveVerificationException("Choose a fixed NTFS volume.");
+
+  // Elevate only the read-only status query. The app and vault keep the current Windows identity.
+  string probe=@"try {
+    $ErrorActionPreference = 'Stop'
+    Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1')
+    $volume = Get-WmiObject -Namespace 'root\CIMV2\Security\MicrosoftVolumeEncryption' -Class Win32_EncryptableVolume -Filter ""DriveLetter='"+letter+@"'""
+    if ($null -eq $volume) { exit 13 }
+    $lock = $volume.GetLockStatus()
+    if ($lock.ReturnValue -ne 0) { exit 14 }
+    if ($lock.LockStatus -ne 0) { exit 12 }
+    $protection = $volume.GetProtectionStatus()
+    $conversion = $volume.GetConversionStatus()
+    if ($protection.ReturnValue -ne 0 -or $conversion.ReturnValue -ne 0) { exit 14 }
+    if ($protection.ProtectionStatus -eq 1 -and $conversion.ConversionStatus -eq 1) { exit 0 }
+    exit 13
+   } catch { exit 14 }";
+  string arguments="-NoProfile -NonInteractive -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(probe));
+  string executable=Path.Combine(Environment.SystemDirectory,@"WindowsPowerShell\v1.0\powershell.exe");
+  int result;
+  try{
+   using(var process=Process.Start(new ProcessStartInfo(executable,arguments){
+    UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden,WorkingDirectory=Environment.SystemDirectory
+   })){
+    if(process==null||!process.WaitForExit(60000))
+     throw new DriveVerificationException("The Windows BitLocker status check did not finish. Try again.");
+    result=process.ExitCode;
    }
+  }catch(Win32Exception ex){
+   if(ex.NativeErrorCode==1223)
+    throw new DriveVerificationException("The Windows administrator prompt was canceled. Approve it to check BitLocker.");
+   throw new DriveVerificationException("Windows could not start the BitLocker status check. Ask your IT administrator to verify access.");
   }
-  throw new IOException("Enable BitLocker and finish encryption before continuing.");
+  if(result==0)return;
+  if(result==12)throw new DriveVerificationException("Unlock "+letter+" in File Explorer, then try again.");
+  if(result==13)throw new DriveVerificationException("Turn on BitLocker for "+letter+" and wait for encryption to finish.");
+  throw new DriveVerificationException("Windows could not verify BitLocker on "+letter+". Ask IT to check the volume and BitLocker permissions.");
  }
  public static void PrivateFolder(string folder){
   if(Directory.Exists(folder)||File.Exists(folder))throw new IOException("The destination already exists.");

@@ -18,7 +18,8 @@ public static class Program {
    using(var dummyVault=new Vault(Path.Combine(home,"training")))
     Application.Run(new Dashboard(vault,new Dummy(dummyVault)));
    return 0;
-  }catch(Exception){MessageBox.Show("MedQueue could not open its protected workspace. Verify BitLocker, the Windows account and whether MedQueue is already running.","MedQueue");return 1;}
+  }catch(DriveVerificationException ex){MessageBox.Show(ex.Message,"MedQueue");return 1;}
+  catch(Exception){MessageBox.Show("MedQueue could not open its protected workspace. Verify BitLocker, the Windows account and whether MedQueue is already running.","MedQueue");return 1;}
  }
 }
 public class Dashboard : Form {
