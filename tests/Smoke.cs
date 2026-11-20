@@ -22,10 +22,15 @@ class Smoke {
     ProviderAccounts.Create(vault,null,"training-admin","PracticeAdmin9!",true);
     new Sync(vault).Run(dummy,"demo");
     Check(vault.View(s=>s.Visits.Count)==2,"Only the next 24 hours should load.");
+    Check(vault.View(s=>PatientIdentity.Find(s,"provider","Avery Sample","1988-04-13","202-555-0110").Count)==0,"Wrong birth date revealed a patient.");
+    Check(vault.View(s=>PatientIdentity.Find(s,"provider","Avery Sample","1988-04-12","202-555-0111").Count)==0,"Wrong phone revealed a patient.");
+    Check(vault.View(s=>PatientIdentity.Find(s,"provider","Jordan Example","1988-04-12","202-555-0110").Count)==0,"Wrong name revealed a patient.");
+    Check(vault.View(s=>PatientIdentity.Find(s,"provider","  avery  sample ","1988-04-12","(202) 555-0110").Count)==1,"Verified patient did not match.");
     visitId=vault.View(s=>s.Visits.First().Id);
     vault.Save(s=>{
      var visit=s.Visits.Single(x=>x.Id==visitId);
-     s.Edit(visit,"patient:demo","check-in",null);
+     s.CheckIn(visit,"provider");
+     s.CheckIn(visit,"provider");
      s.Edit(visit,"provider","prescription",new Record{Id="sample-rx",Kind="Prescription",Title="Training medication",Body="Fictional instructions"});
     });
     eventId=vault.View(s=>s.Queue.First().Id);
@@ -51,8 +56,31 @@ class Smoke {
     sync.Run(dummy,"demo");
     Check(vault.View(s=>s.Queue.Single().Conflict),"Conflict did not remain queued.");
     Check(!dummy.Chart(visitId).Records.Exists(x=>x.Id=="note"),"Conflict overwrote cloud.");
+    vault.Save(s=>{
+     var change=s.Queue.Single();change.Conflict=false;change.BaseRevision="changed-in-cloud";
+     var current=s.Visits.Single(v=>v.Id==visitId);
+     s.Edit(current,"provider","referral",new Record{Id="referral",Kind="Referral",Title="Training referral",Body="Fictional destination"});
+     s.Edit(current,"patient:demo","signed-form",new Record{Id="form",Kind="Signed form",Title="Consent",Body="Fictional signature"});
+     s.Complete(current,"provider");
+    });
+    Check(vault.View(s=>s.Queue.Last().Encounter.Records.Count)==4,"Handoff did not contain exactly the current visit entries.");
+    Check(dummy.Chart(visitId).CompletedAt==null,"Offline completion reached the adapter prematurely.");
+    try{
+     vault.Save(s=>s.CheckIn(s.Visits.Single(v=>v.Id==visitId),"provider"));
+     throw new Exception("Completed appointment could be checked in again.");
+    }catch(InvalidOperationException){}
+    sync.Run(dummy,"demo");
+    sync.Run(dummy,"demo");
+    Check(vault.View(s=>s.Queue.Count)==0,"Completion handoff did not clear after acknowledgement.");
+    var receiptEvent=cloud.View(s=>s.CompletedEncounters.Single());
+    Check(dummy.Apply(receiptEvent).EventId==receiptEvent.Id&&cloud.View(s=>s.CompletedEncounters.Count)==1,
+     "Replaying completion created a duplicate handoff.");
+    var handedOff=receiptEvent.Encounter;
+    Check(handedOff.Records.Any(r=>r.Id=="referral")&&handedOff.Records.Any(r=>r.Id=="sample-rx")&&
+     handedOff.Records.Any(r=>r.Id=="note")&&handedOff.Records.Any(r=>r.Id=="form"),"Chart handoff lost visit items.");
+    Check(vault.View(s=>s.Visits.Single(v=>v.Id==visitId).CompletedAt)==handedOff.CompletedAt,"Completed status changed on refresh.");
    }
   }
-  Console.WriteLine("PASS: 24-hour filter, encrypted vault, restart durability, adapter identity, idempotent replay, prescription sync, conflict preservation.");
+  Console.WriteLine("PASS: admin sign-in, patient verification, check-in, encrypted offline changes, conflicts, and completed-visit handoff.");
  }
 }

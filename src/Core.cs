@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Runtime.InteropServices;
+using System.Globalization;
 
 namespace MedQueue {
 public class DriveVerificationException : IOException {
@@ -123,17 +124,79 @@ public static class ProviderAccounts {
  }
 }
 public class FormDef {public string Id,Title,Body;public int Version;}
-public class Record {public string Id,Kind,Title,Body;}
-public class Visit {public string Id,PatientId,Name,Start,Revision,CheckedIn,PassHash,PassUntil;public bool Active;public List<Record> Records=new List<Record>();}
-public class Change {public string Id,VisitId,PatientId,Actor,At,Kind,BaseRevision;public Record Record;public bool Conflict;}
+public class Record {public string Id,Kind,Title,Body,EncounterId;}
+public class Visit {
+ public string Id,PatientId,Name,BirthDate,Phone,Start,Revision,CheckedIn,CompletedAt,CompletedBy,PassHash,PassUntil;
+ public bool Active;
+ public List<Record> Records=new List<Record>();
+}
+public class EncounterHandoff {
+ public string ScheduledAt,CheckedInAt,CompletedAt,CompletedBy;
+ public List<Record> Records;
+}
+public class Change {
+ public string Id,VisitId,PatientId,Actor,At,Kind,BaseRevision;
+ public Record Record;
+ public EncounterHandoff Encounter;
+ public bool Conflict;
+}
+public static class PatientIdentity {
+ public static bool ValidBirthDate(string date){
+  DateTime value;
+  return DateTime.TryParseExact(date,"yyyy-MM-dd",CultureInfo.InvariantCulture,DateTimeStyles.None,out value)&&value.Date<=DateTime.Today;
+ }
+ public static string PhoneDigits(string phone){
+  if(String.IsNullOrWhiteSpace(phone))return null;
+  if(!phone.All(c=>(c>='0'&&c<='9')||" +-().".IndexOf(c)>=0))return null;
+  string digits=new string(phone.Where(c=>c>='0'&&c<='9').ToArray());
+  return digits.Length>=7&&digits.Length<=15?digits:null;
+ }
+ static string Name(string value){return String.Join(" ",(value??"").Split((char[])null,StringSplitOptions.RemoveEmptyEntries));}
+ public static List<Visit> Find(State state,string actor,string name,string birthDate,string phone){
+  string digits=PhoneDigits(phone);
+  string normalizedName=Name(name);
+  if(!ValidBirthDate(birthDate)||digits==null||normalizedName.Length==0)return new List<Visit>();
+  var matches=state.Visits.Where(v=>String.Equals(Name(v.Name),normalizedName,StringComparison.OrdinalIgnoreCase)
+    &&v.BirthDate==birthDate&&PhoneDigits(v.Phone)==digits).OrderBy(v=>Common.Utc(v.Start)).ToList();
+  if(matches.Select(v=>v.PatientId).Distinct().Skip(1).Any())matches.Clear();
+  state.Audit(actor,matches.Count==0?"patient verification failed":"patient verified",matches.Count==0?null:matches[0].PatientId);
+  return matches;
+ }
+}
 public class Audit {public string At,Actor,Action,Target;}
 public class State {
  public int Format=1;public string Endpoint,Token,LastSync,PracticeId;public bool Offline;
  public List<Provider> Providers=new List<Provider>();public List<FormDef> Forms=new List<FormDef>();public List<Visit> Visits=new List<Visit>();public List<Change> Queue=new List<Change>();public List<Audit> Log=new List<Audit>();
+ public List<Change> CompletedEncounters=new List<Change>();
  public void Audit(string actor,string action,string target){Log.Add(new Audit{At=Common.Now(),Actor=actor,Action=action,Target=target});}
- public void Edit(Visit v,string actor,string kind,Record r){
-  if(kind=="check-in")v.CheckedIn=Common.Now();else {v.Records.RemoveAll(x=>x.Id==r.Id);v.Records.Add(r);}
-  Queue.Add(new Change{Id=Common.Id(),VisitId=v.Id,PatientId=v.PatientId,Actor=actor,At=Common.Now(),BaseRevision=v.Revision,Kind=kind,Record=r});Audit(actor,kind,v.Id);
+ public void CheckIn(Visit visit,string actor){
+  if(visit.CompletedAt!=null)throw new InvalidOperationException("This visit is already completed.");
+  if(visit.CheckedIn==null){
+   visit.CheckedIn=Common.Now();
+   Enqueue(visit,actor,"check-in",visit.CheckedIn,null,null);
+  }
+  visit.Active=true;
+ }
+ public void Edit(Visit visit,string actor,string kind,Record record){
+  if(visit.CheckedIn==null||visit.CompletedAt!=null)throw new InvalidOperationException("This visit is not open for editing.");
+  record.EncounterId=visit.Id;
+  visit.Records.RemoveAll(x=>x.Id==record.Id);
+  visit.Records.Add(record);
+  Enqueue(visit,actor,kind,Common.Now(),record,null);
+ }
+ public void Complete(Visit visit,string actor){
+  if(visit.CheckedIn==null||visit.CompletedAt!=null)throw new InvalidOperationException("This visit cannot be completed.");
+  visit.CompletedAt=Common.Now();
+  visit.CompletedBy=actor;
+  visit.Active=false;visit.PassHash=null;visit.PassUntil=null;
+  var summary=new EncounterHandoff{ScheduledAt=visit.Start,CheckedInAt=visit.CheckedIn,
+   CompletedAt=visit.CompletedAt,CompletedBy=actor,Records=visit.Records.Where(x=>x.EncounterId==visit.Id).ToList()};
+  Enqueue(visit,actor,"visit-completed",visit.CompletedAt,null,summary);
+ }
+ void Enqueue(Visit visit,string actor,string kind,string at,Record record,EncounterHandoff summary){
+  Queue.Add(new Change{Id=Common.Id(),VisitId=visit.Id,PatientId=visit.PatientId,Actor=actor,At=at,
+   BaseRevision=visit.Revision,Kind=kind,Record=record,Encounter=summary});
+  Audit(actor,kind,visit.Id);
  }
 }
 public class Vault : IDisposable {

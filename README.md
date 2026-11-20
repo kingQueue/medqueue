@@ -23,10 +23,9 @@ New administrator and provider passwords must be 14–256 characters and include
 ## Run a fictional outage drill
 
 1. Sign in as administrator, open **Connect cloud**, and select **Start fictional training clinic**. Two fictional visits enter the vault. A third visit sits outside the download window.
-2. Create a form template. Select a visit and issue a one-use access code after checking the patient's identity. MedQueue signs out the provider. In the patient screen, use the code to check in and type the fictional patient's full name to sign the form.
-3. Sign in again and use **Toggle training outage** to simulate loss of connectivity. Add a clinical note or document a prescription change. Repeat the check-in steps during the outage to exercise patient forms offline.
-4. Close and reopen MedQueue if you want to test restart recovery. Use **Toggle training outage** again to reconnect. Queued changes drain automatically. The status bar reports queued items, conflicts, and the most recent completed sync.
-5. Use **Close visit** when treatment is complete. Close active visits promptly to allow expired charts to be removed.
+2. Choose **Find and verify patient**. Try **Avery Sample**, **1988-04-12**, and **202-555-0110**. The appointment opens only after all three details match. The second test patient is **Jordan Example**, **1979-09-23**, **202-555-0111**.
+3. Choose **Mark patient signed in** to open **Current visit**. Use the **Doctor chart**, **Prescriptions**, and **Referrals** tabs. If the patient needs to sign a form, create a template and issue a one-use patient access code from the verified appointment. MedQueue signs out the provider. The patient can use the code and their fictional name to sign the form. Sign back in and verify the patient again to return to the visit.
+4. Use **Toggle training outage**, enter fictional visit updates, and select **Complete appointment**. The visit becomes read-only and its chart handoff stays in the encrypted queue. Restarting MedQueue during the outage preserves the queue. Reconnect with **Toggle training outage** and verify that the completed visit shows the cloud adapter's acknowledgement.
 
 ## Link a practice adapter
 
@@ -37,6 +36,7 @@ Install a separate workspace for a live adapter. Under **Connect cloud**, enter 
 - While MedQueue is open, it attempts sync at startup and every 15 seconds, including at the locked sign-in screen. Keep the app running on the designated workstation before an outage to populate the cache.
 - MedQueue downloads charts for scheduled appointments starting in the next 24 hours. It retains previously downloaded visits for up to 24 hours after the start time and keeps active visits or visits with pending changes until closed or reconciled. An appointment created while disconnected can only appear after the adapter becomes reachable.
 - Visit check-ins, signed form snapshots, clinical records, and prescription documentation are persisted with their queued changes. Stable event IDs and revision checks protect retries. Use **Review sync conflict** to compare the cloud and local values and authorize a retry against the reviewed revision. The adapter must implement atomic revision checks and idempotency.
+- Completing an appointment queues a structured handoff with the visit identifier, timestamps, provider, and chart entries, prescriptions, signed forms and referral requests recorded for that encounter. The adapter receives the completion event after earlier visit changes. Its acknowledgement means that the adapter has accepted the visit under its integration contract. Referrals and prescriptions require the receiving system's own delivery and authorization workflows.
 - Audit activity, form templates, credentials, and clinical data are protected with Windows DPAPI under the designated Windows account. The file is replaced atomically. Windows filesystem permissions restrict the workspace to the designated account and Local System. Team access is provided by named logins within a single running workspace on a single workstation.
 - Prescription changes are chart documentation. Pharmacy transmission and controlled-substance prescribing require their own validated workflows. Form templates and workstation audit events remain local.
 
