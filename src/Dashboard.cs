@@ -96,8 +96,10 @@ public class Dashboard : Form {
    Add("Issue patient access code",Issue);Add("Complete appointment",CompleteVisit);
    Add("Create or edit form",FormEditor);Add("Review sync conflict",ReviewConflict);
    Add("Sync now",()=>{var unused=RefreshCloud();});
-   if(admin){Add("Connect cloud",Connect);Add("Add provider",()=>Account(false));Add("Audit log",AuditLog);
-    if(vault.View(s=>s.PracticeId=="demo"))Add("Toggle training outage",Toggle);
+   if(admin){Add("Charting connections",Connect);Add("Add provider",()=>Account(false));Add("Audit log",AuditLog);
+    var practice=vault.View(s=>s.PracticeId);
+    if(practice=="demo")Add("Toggle training outage",Toggle);
+    if(practice==null)Add("Start training clinic",StartTraining);
    }
    Add("Sign out",Logout);Populate();LoadRecords();
   }
@@ -351,9 +353,9 @@ public class Dashboard : Form {
   if(e==null){Say("This visit has no sync conflict.");return;}
   string actor=provider;busy=true;
   try{
-   var setup=vault.View(s=>new{s.Endpoint,s.Token,s.PracticeId,s.Offline});
+   var setup=vault.View(s=>new{s.Endpoint,s.Token,s.Connections,s.PracticeId,s.Offline});
    if(setup.Offline){Say("Reconnect before reviewing a conflict.");return;}
-   ICloud target=setup.PracticeId=="demo"?(ICloud)dummy:new Remote(setup.Endpoint,setup.Token);
+   ICloud target=CloudTarget(setup.PracticeId,setup.Connections,setup.Endpoint,setup.Token);
    var remote=await Task.Run(()=>{
     if(target.Verify().PracticeId!=setup.PracticeId)throw new InvalidOperationException();
     return target.Chart(v.Id);
@@ -378,30 +380,43 @@ public class Dashboard : Form {
   finally{busy=false;}
   await RefreshCloud();
  }
+ void StartTraining(){
+  if(busy){Say("Wait for the current sync.");return;}
+  string actor=provider;
+  if(MessageBox.Show(this,"Use only fictional information in this training workspace.","Start training",MessageBoxButtons.OKCancel)!=DialogResult.OK||
+     actor!=provider||!admin)return;
+  dummy.Seed();
+  vault.Save(s=>{if(s.PracticeId!=null)throw new InvalidOperationException();s.PracticeId="demo";s.Audit(actor,"training linked","demo");});
+  Draw();Say("Training clinic linked");
+  var unused=RefreshCloud();
+ }
+ ICloud CloudTarget(string practice,ChartingConnections connections,string endpoint,string token){
+  if(practice=="demo")return dummy;
+  if(connections!=null)return new Remote(connections);
+  return new Remote(endpoint,token);
+ }
  async void Connect(){
   if(busy){Say("Wait for the current sync.");return;}
-  var linked=vault.View(s=>new{s.PracticeId,s.Endpoint});
-  if(linked.PracticeId=="demo"){Say("This is a training workspace. Install a separate practice workspace to link an adapter.");return;}
-  int mode=linked.PracticeId==null?Choose("Cloud connection",new[]{"Link an HTTPS adapter","Start fictional training clinic"}):0;if(mode<0)return;
+  var linked=vault.View(s=>new{s.PracticeId,s.Connections,s.Endpoint});
+  if(linked.Connections==null&&linked.Endpoint!=null&&vault.View(s=>s.Queue.Count>0||s.Visits.Any(v=>v.Active))){
+   Say("Complete active visits and sync the legacy queue before switching to three connections.");return;
+  }
   string actor=provider;busy=true;
   try{
-   if(mode==1){
-    if(MessageBox.Show(this,"Use only fictional information in this training workspace.","Start training",MessageBoxButtons.OKCancel)!=DialogResult.OK)return;
-    dummy.Seed();vault.Save(s=>{s.PracticeId="demo";s.Audit(actor,"training linked","demo");});
-   }else{
-    var a=Prompt(this,"Verify cloud adapter",new[]{"HTTPS adapter base URL","Bearer credential"},new[]{linked.Endpoint??"",""},1);
-    if(a==null)return;
-    var remote=new Remote(a[0].Trim(),a[1].Trim());
-    var identity=await Task.Run(()=>{var i=remote.Verify();if(remote.Schedule(DateTime.UtcNow)==null)throw new IOException();return i;});
-    if(actor!=provider||DateTime.UtcNow>expires)return;
-    if(identity.PracticeId=="demo")throw new InvalidOperationException();
-    if(linked.PracticeId!=null&&linked.PracticeId!=identity.PracticeId){Say("This workspace is bound to another practice.");return;}
-    if(MessageBox.Show(this,"Verified "+identity.Practice+" ("+identity.PracticeId+"). Link this adapter?","Cloud identity",MessageBoxButtons.YesNo)!=DialogResult.Yes)return;
-    if(actor!=provider||DateTime.UtcNow>expires)return;
-    vault.Save(s=>{s.Endpoint=a[0].Trim();s.Token=a[1].Trim();s.PracticeId=identity.PracticeId;s.Audit(actor,"adapter verified",identity.PracticeId);});
+   using(var dialog=new ChartingConnectionDialog(linked.Connections,linked.Endpoint,linked.PracticeId)){
+    if(dialog.ShowDialog(this)!=DialogResult.OK||actor!=provider||!admin||DateTime.UtcNow>expires)return;
+    var configured=dialog.Connections;
+    var identity=dialog.VerifiedIdentity;
+    configured.RoutingId=identity.RoutingId;
+    vault.Save(s=>{
+     if(s.PracticeId!=linked.PracticeId||(s.Connections==null&&s.Endpoint!=null&&(s.Queue.Count>0||s.Visits.Any(v=>v.Active))))
+      throw new InvalidOperationException();
+     s.Connections=configured;s.PracticeId=identity.PracticeId;s.Endpoint=null;s.Token=null;
+     s.Audit(actor,"charting connections verified",identity.PracticeId);
+    });
    }
-   Draw();Say("Cloud connection linked");
-  }catch(Exception){Say("Cloud verification failed. Check the HTTPS address, credential and adapter protocol.");}
+   Draw();Say("Three charting connections linked");
+  }catch(Exception){Say("Could not save the charting connections. Previous settings are still in use.");}
   finally{busy=false;}
   await RefreshCloud();
  }
@@ -410,12 +425,12 @@ public class Dashboard : Form {
   var cutoff=DateTime.UtcNow.AddHours(-24);
   if(vault.View(s=>s.Visits.Exists(v=>!v.Active&&Common.Utc(v.Start)<cutoff&&!s.Queue.Exists(e=>e.VisitId==v.Id))))
    vault.Save(s=>s.Visits.RemoveAll(v=>!v.Active&&Common.Utc(v.Start)<cutoff&&!s.Queue.Exists(e=>e.VisitId==v.Id)));
-  var setup=vault.View(s=>new{s.Endpoint,s.Token,s.PracticeId,s.Offline});
+  var setup=vault.View(s=>new{s.Endpoint,s.Token,s.Connections,s.PracticeId,s.Offline});
   if(setup.PracticeId==null){connectionStatus="Cloud setup required";Status();return;}
   if(setup.Offline){connectionStatus="Simulated outage";Status();return;}
   busy=true;
   try{
-   ICloud target=setup.PracticeId=="demo"?(ICloud)dummy:new Remote(setup.Endpoint,setup.Token);
+   ICloud target=CloudTarget(setup.PracticeId,setup.Connections,setup.Endpoint,setup.Token);
    if(setup.PracticeId=="demo"&&!demoSeeded){
     await Task.Run(()=>dummy.Seed());demoSeeded=true;
    }
@@ -423,6 +438,82 @@ public class Dashboard : Form {
    if(provider!=null&&Form.ActiveForm==this)Populate();
   }catch(Exception){connectionStatus="Sync unavailable · retrying automatically";}
   finally{busy=false;Status();}
+ }
+}
+sealed class ChartingConnectionDialog : Form {
+ readonly TextBox[] urls=new TextBox[3],keys=new TextBox[3],secrets=new TextBox[3];
+ readonly ConnectionKey[] saved;
+ readonly TabControl tabs=new TabControl{Dock=DockStyle.Fill};
+ readonly Label status=new Label{Dock=DockStyle.Top,Height=68,Padding=new Padding(12,8,12,0)};
+ readonly Button verify=new Button{Text="Verify and link",AutoSize=true};
+ public ChartingConnections Connections {get;private set;}
+ public Identity VerifiedIdentity {get;private set;}
+
+ public ChartingConnectionDialog(ChartingConnections previous,string legacyEndpoint,string practice){
+  Text="Charting connections";Width=690;Height=445;StartPosition=FormStartPosition.CenterParent;
+  MinimizeBox=false;MaximizeBox=false;Font=new Font("Segoe UI",10);
+  saved=previous==null?new ConnectionKey[3]:new[]{previous.Appointments,previous.Charts,previous.Writeback};
+  string[] names={"Appointments","Chart reads","Chart writeback"};
+  string[] purposes={"Find appointments starting in the next 24 hours.","Download charts for the scheduled patients.",
+   "Send queued updates and completed visits to the charting system."};
+  for(int i=0;i<names.Length;i++){
+   var tab=new TabPage(names[i]);
+   var fields=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,AutoScroll=true,Padding=new Padding(14)};
+   fields.Controls.Add(new Label{Text=purposes[i],AutoSize=true,Margin=new Padding(3,3,3,13)});
+   urls[i]=Field(fields,"HTTPS adapter base URL",saved[i]==null?legacyEndpoint??"":saved[i].Url,false,2048);
+   keys[i]=Field(fields,"API key ID","",false,4096);
+   secrets[i]=Field(fields,"API key secret","",true,4096);
+   if(saved[i]!=null)fields.Controls.Add(new Label{Text="Leave both key fields blank to keep the saved pair for this URL.",AutoSize=true});
+   tab.Controls.Add(fields);tabs.TabPages.Add(tab);
+  }
+  bool training=practice=="demo";
+  status.Text=training?"Training workspace. You can verify connections here. Use a separate practice workspace to link them.":
+   "Enter a separate key pair on each tab. All three connections must identify the same practice.";
+  if(training)verify.Text="Verify connections";
+  var bar=new FlowLayoutPanel{Dock=DockStyle.Bottom,Height=50,Padding=new Padding(10,4,0,0)};
+  var cancel=new Button{Text="Cancel",DialogResult=DialogResult.Cancel,AutoSize=true};
+  bar.Controls.Add(verify);bar.Controls.Add(cancel);Controls.Add(tabs);Controls.Add(bar);Controls.Add(status);
+  AcceptButton=verify;CancelButton=cancel;
+  verify.Click+=async(s,e)=>await VerifyConnections(previous,practice,training);
+  var timeout=new Timer{Interval=180000};timeout.Tick+=(s,e)=>Close();timeout.Start();
+  FormClosed+=(s,e)=>timeout.Dispose();
+ }
+ static TextBox Field(TableLayoutPanel panel,string label,string value,bool mask,int maxLength){
+  panel.Controls.Add(new Label{Text=label,AutoSize=true});
+  var box=new TextBox{Dock=DockStyle.Top,Text=value,MaxLength=maxLength,UseSystemPasswordChar=mask,AccessibleName=label};
+  panel.Controls.Add(box);return box;
+ }
+ ConnectionKey Read(int i){
+  try{
+   string url=ConnectionKey.NormalizeUrl(urls[i].Text.Trim());
+   var existing=saved[i];
+   if(existing!=null&&url==existing.Url&&keys[i].Text.Length==0&&secrets[i].Text.Length==0)return existing;
+   var candidate=new ConnectionKey{Url=url,KeyId=keys[i].Text.Trim(),Secret=secrets[i].Text.Trim()};
+   candidate.Validate();return candidate;
+  }catch(ArgumentException){tabs.SelectedIndex=i;throw;}
+ }
+ async Task VerifyConnections(ChartingConnections previous,string practice,bool training){
+  verify.Enabled=false;tabs.Enabled=false;
+  try{
+   var configured=new ChartingConnections{Appointments=Read(0),Charts=Read(1),Writeback=Read(2),
+    RoutingId=previous==null?null:previous.RoutingId};
+   var adapter=new Remote(configured);
+   status.Text="Verifying the three connections…";
+   var identity=await Task.Run(()=>adapter.Verify());
+   if(IsDisposed)return;
+   if(identity.PracticeId=="demo"||(!training&&practice!=null&&identity.PracticeId!=practice))
+    throw new IOException("The verified connections belong to a different practice.");
+   if(training){status.Text="Verified all three connections for "+identity.Practice+". Use a separate practice workspace to link them.";return;}
+   if(MessageBox.Show(this,"Link appointments, chart reads, and chart writeback for "+identity.Practice+" ("+identity.PracticeId+")?",
+     "Confirm charting connections",MessageBoxButtons.YesNo,MessageBoxIcon.Question,MessageBoxDefaultButton.Button2)!=DialogResult.Yes){
+    status.Text="Connections verified. Review the settings before linking.";return;
+   }
+   if(IsDisposed)return;
+   Connections=configured;VerifiedIdentity=identity;DialogResult=DialogResult.OK;
+  }catch(ArgumentException ex){if(!IsDisposed)status.Text=ex.Message;}
+   catch(IOException ex){if(!IsDisposed)status.Text=ex.Message;}
+   catch(Exception){if(!IsDisposed)status.Text="Verification failed. Check the three adapter URLs and key pairs.";}
+  finally{if(!IsDisposed){verify.Enabled=true;tabs.Enabled=true;}}
  }
 }
 }

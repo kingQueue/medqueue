@@ -7,6 +7,7 @@ using MedQueue;
 class Smoke {
  static void Check(bool condition,string message){if(!condition)throw new Exception(message);}
  static void Main(){
+  CheckSplitConnections();
   Check(Common.IsNewPasswordValid("PracticeAdmin9!"),"Valid password rejected.");
   Check(!Common.IsNewPasswordValid("practiceadmin9!"),"Password missing a capital letter accepted.");
   Check(!Common.IsNewPasswordValid("PracticeAdminA!"),"Password missing a number accepted.");
@@ -82,5 +83,38 @@ class Smoke {
    }
   }
   Console.WriteLine("PASS: admin sign-in, patient verification, check-in, encrypted offline changes, conflicts, and completed-visit handoff.");
+ }
+ static void CheckSplitConnections(){
+  const string practice="practice-test",routing="tenant-test";
+  var links=new ChartingConnections{
+   Appointments=new ConnectionKey{Url="https://appointments.invalid",KeyId="schedule-id",Secret="schedule-test"},
+   Charts=new ConnectionKey{Url="https://charts.invalid",KeyId="chart-id",Secret="chart-test"},
+   Writeback=new ConnectionKey{Url="https://writeback.invalid",KeyId="write-id",Secret="write-test"}
+  };
+  var calls=new List<string>();
+  string writerRoute=routing;
+  var client=new Remote(links,(key,path,body)=>{
+   string role=key==links.Appointments?"appointments":key==links.Charts?"charts":"writeback";
+   calls.Add(role+" "+path.Split('?')[0]);
+   if(path=="/identity"){
+    Check(body==null,"Verification wrote data.");
+    return Common.Json.Serialize(new Identity{PracticeId=practice,Practice="Fictional practice",Protocol=Identity.CurrentProtocol,
+     RoutingId=role=="writeback"?writerRoute:routing,Role=role});
+   }
+   if(path.StartsWith("/appointments?"))return "[]";
+   if(path.StartsWith("/visits/"))return "{\"Id\":\"fake-visit\"}";
+   Check(body is Change,"Writeback did not include a change event.");
+   return "{\"EventId\":\"fake-event\",\"Revision\":\"2\"}";
+  });
+  Check(client.Verify().PracticeId==practice,"Split practice identity did not verify.");
+  links.RoutingId=routing;
+  client.Schedule(DateTime.UtcNow);client.Chart("fake-visit");client.Apply(new Change{Id="fake-event"});
+  Check(calls.SequenceEqual(new[]{"appointments /identity","charts /identity","writeback /identity",
+   "appointments /appointments","charts /visits/fake-visit","writeback /changes"}),"A request used the wrong connection.");
+  writerRoute="different-tenant";
+  try{client.Verify();throw new Exception("Mismatched writeback routing accepted.");}catch(IOException){}
+  links.Writeback.Secret=links.Charts.Secret;
+  try{links.Validate();throw new Exception("Same key secret accepted for two roles.");}catch(ArgumentException){}
+  try{ConnectionKey.NormalizeUrl("http://appointments.invalid");throw new Exception("HTTP accepted.");}catch(ArgumentException){}
  }
 }

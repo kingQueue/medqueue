@@ -2,6 +2,8 @@
 
 MedQueue is a Windows desktop pilot for clinic downtime. A practice workstation keeps a local copy of upcoming patients' charts and can continue checking patients in, collecting form signatures, and documenting care while a cloud service is unavailable.
 
+![MedQueue system architecture showing the practice workstation, encrypted vault, sync engine, and three separately credentialed charting connections](docs/architecture.png)
+
 ## Install
 
 Download the [Windows installer](dist-download/MedQueueSetup.exe) and open it while signed into the designated Windows account. Choose an unlocked fixed NTFS volume with BitLocker protection on and encryption complete. Setup places the executable and vault on that drive and adds a Start menu shortcut. The designated Windows account must have permission to create and write the workspace. The installer is unsigned.
@@ -22,14 +24,24 @@ New administrator and provider passwords must be 14–256 characters and include
 
 ## Run a fictional outage drill
 
-1. Sign in as administrator, open **Connect cloud**, and select **Start fictional training clinic**. Two fictional visits enter the vault. A third visit sits outside the download window.
+1. Sign in as administrator and select **Start training clinic**. Two fictional visits enter the vault. A third visit sits outside the download window.
 2. Choose **Find and verify patient**. Try **Avery Sample**, **1988-04-12**, and **202-555-0110**. The appointment opens only after all three details match. The second test patient is **Jordan Example**, **1979-09-23**, **202-555-0111**.
 3. Choose **Mark patient signed in** to open **Current visit**. Use the **Doctor chart**, **Prescriptions**, and **Referrals** tabs. If the patient needs to sign a form, create a template and issue a one-use patient access code from the verified appointment. MedQueue signs out the provider. The patient can use the code and their fictional name to sign the form. Sign back in and verify the patient again to return to the visit.
 4. Use **Toggle training outage**, enter fictional visit updates, and select **Complete appointment**. The visit becomes read-only and its chart handoff stays in the encrypted queue. Restarting MedQueue during the outage preserves the queue. Reconnect with **Toggle training outage** and verify that the completed visit shows the cloud adapter's acknowledgement.
 
 ## Link a practice adapter
 
-Install a separate workspace for a live adapter. Under **Connect cloud**, enter its HTTPS base URL and scoped bearer credential. MedQueue verifies the adapter protocol, practice identity, and appointment read endpoint. Check that the displayed practice identity matches the intended practice before approving the link. The workspace is bound to that practice ID, and its credential is stored inside the encrypted vault. The clinic's integration team implements the [adapter contract](ADAPTER.md) against its EHR and verifies write permissions, record mapping, and clinical behavior in staging.
+Install a separate workspace for a live integration. As a practice administrator, open **Charting connections** and enter the HTTPS adapter base URL, API key ID, and secret on each tab.
+
+| Connection | Purpose |
+| --- | --- |
+| Appointments | Pull the schedule for appointments starting within the next 24 hours. |
+| Chart reads | Fetch the chart for each eligible appointment. |
+| Chart writeback | Send queued changes and completed visits to the charting system. |
+
+Use a distinct key pair for each role. The URLs may point to three services or to a single gateway that enforces the three grants. **Verify and link** checks the role claimed by each credential and requires matching practice and record routing IDs. MedQueue stores the three pairs in the encrypted vault after administrator approval. To rotate one pair, supply its new ID and secret and leave both key fields blank on the other tabs. Changing an endpoint URL requires entering its key pair again.
+
+MedQueue uses the [HTTPS adapter contract](ADAPTER.md). A clinic's integration team connects those adapter routes to each vendor's API or approved database interface. Existing single-credential configurations can continue syncing. Complete active visits and drain the existing queue before migrating to three pairs for the same patient and visit ID mapping.
 
 ## How downtime works
 

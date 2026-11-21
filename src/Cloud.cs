@@ -4,33 +4,71 @@ using System.Net;
 using System.Text;
 using System.Linq;
 using System.Collections.Generic;
-using System.Threading;
 
 namespace MedQueue {
 public class Slot {public string Id,PatientId,Start;}
 public class Identity {
  public const string CurrentProtocol="medqueue/2";
- public string Protocol,Practice,PracticeId;
+ public string Protocol,Practice,PracticeId,Role,RoutingId;
 }
 public class Receipt {public string EventId,Revision;}
 public interface ICloud {Identity Verify();List<Slot> Schedule(DateTime now);Visit Chart(string id);Receipt Apply(Change e);}
 public class Remote : ICloud {
- readonly string url,token;
+ readonly ConnectionKey legacy;
+ readonly ChartingConnections connections;
+ readonly Func<ConnectionKey,string,object,string> send;
  public Remote(string url,string token){
-  Uri uri;if(!Uri.TryCreate(url,UriKind.Absolute,out uri)||uri.Scheme!="https"||uri.UserInfo!=""||uri.Query!=""||uri.Fragment!=""||String.IsNullOrWhiteSpace(token))throw new ArgumentException("Enter an HTTPS adapter URL and a credential.");
-  this.url=uri.AbsoluteUri.TrimEnd('/');this.token=token;
+  if(!ConnectionKey.IsKey(token))throw new ArgumentException("Enter a valid adapter credential.");
+  legacy=new ConnectionKey{Url=ConnectionKey.NormalizeUrl(url),Secret=token};
+  send=SendHttp;
  }
- T Send<T>(string path,object body){
-  var r=(HttpWebRequest)WebRequest.Create(url+path);r.AllowAutoRedirect=false;r.Timeout=12000;r.ReadWriteTimeout=12000;r.Headers["Authorization"]="Bearer "+token;r.Accept="application/json";
-  if(body!=null){r.Method="POST";r.ContentType="application/json";var b=Encoding.UTF8.GetBytes(Common.Json.Serialize(body));using(var w=r.GetRequestStream())w.Write(b,0,b.Length);}
-  try{using(var response=(HttpWebResponse)r.GetResponse()){if(response.StatusCode!=HttpStatusCode.OK)throw new IOException("Unexpected adapter response.");using(var input=response.GetResponseStream())using(var buffer=new MemoryStream()){
-   var chunk=new byte[8192];int n;while((n=input.Read(chunk,0,chunk.Length))>0){if(buffer.Length+n>8388608)throw new IOException("Adapter response exceeds 8 MB.");buffer.Write(chunk,0,n);}return Common.Json.Deserialize<T>(Encoding.UTF8.GetString(buffer.ToArray()));}}}
+ public Remote(ChartingConnections connections) : this(connections,SendHttp){}
+ internal Remote(ChartingConnections connections,Func<ConnectionKey,string,object,string> send){
+  connections.Validate();
+  this.connections=connections;this.send=send;
+ }
+ static string SendHttp(ConnectionKey connection,string path,object body){
+  var r=(HttpWebRequest)WebRequest.Create(ConnectionKey.NormalizeUrl(connection.Url)+path);
+  r.AllowAutoRedirect=false;r.Timeout=12000;r.ReadWriteTimeout=12000;r.Headers["Authorization"]="Bearer "+connection.Secret;r.Accept="application/json";
+  if(connection.KeyId!=null)r.Headers["X-MedQueue-Key-Id"]=connection.KeyId;
+  try{
+   if(body!=null){r.Method="POST";r.ContentType="application/json";var b=Encoding.UTF8.GetBytes(Common.Json.Serialize(body));using(var w=r.GetRequestStream())w.Write(b,0,b.Length);}
+   using(var response=(HttpWebResponse)r.GetResponse()){if(response.StatusCode!=HttpStatusCode.OK)throw new IOException("Unexpected adapter response.");using(var input=response.GetResponseStream())using(var buffer=new MemoryStream()){
+   var chunk=new byte[8192];int n;while((n=input.Read(chunk,0,chunk.Length))>0){if(buffer.Length+n>8388608)throw new IOException("Adapter response exceeds 8 MB.");buffer.Write(chunk,0,n);}return Encoding.UTF8.GetString(buffer.ToArray());}}}
   catch(WebException ex){using(var resp=ex.Response as HttpWebResponse){if(resp!=null&&resp.StatusCode==HttpStatusCode.Conflict)throw new Conflict();}throw;}
  }
- public Identity Verify(){var i=Send<Identity>("/identity",null);if(i==null||i.Protocol!=Identity.CurrentProtocol||String.IsNullOrWhiteSpace(i.PracticeId)||String.IsNullOrWhiteSpace(i.Practice))throw new IOException("Incompatible adapter identity.");return i;}
- public List<Slot> Schedule(DateTime n){return Send<List<Slot>>("/appointments?from="+Uri.EscapeDataString(n.ToString("o"))+"&until="+Uri.EscapeDataString(n.AddHours(24).ToString("o")),null);}
- public Visit Chart(string id){return Send<Visit>("/visits/"+Uri.EscapeDataString(id),null);}
- public Receipt Apply(Change c){return Send<Receipt>("/changes",c);}
+ T Request<T>(ConnectionKey connection,string path,object body){
+  return Common.Json.Deserialize<T>(send(connection,path,body));
+ }
+ Identity Verify(ConnectionKey connection,string role){
+  Identity identity;
+  try{identity=Request<Identity>(connection,"/identity",null);}
+  catch(Exception ex){throw new IOException("Could not verify the "+(role??"legacy")+" adapter. Check its URL and credentials.",ex);}
+  if(identity==null||identity.Protocol!=Identity.CurrentProtocol||String.IsNullOrWhiteSpace(identity.PracticeId)||String.IsNullOrWhiteSpace(identity.Practice))
+   throw new IOException("Incompatible "+(role??"legacy")+" adapter identity.");
+  if(role!=null&&(identity.Role!=role||String.IsNullOrWhiteSpace(identity.RoutingId)))
+   throw new IOException("The "+role+" connection did not confirm the required role and routing ID.");
+  return identity;
+ }
+ public Identity Verify(){
+  if(legacy!=null)return Verify(legacy,null);
+  var appointments=Verify(connections.Appointments,"appointments");
+  var charts=Verify(connections.Charts,"charts");
+  var writeback=Verify(connections.Writeback,"writeback");
+  if(appointments.PracticeId!=charts.PracticeId||appointments.PracticeId!=writeback.PracticeId||
+     appointments.RoutingId!=charts.RoutingId||appointments.RoutingId!=writeback.RoutingId)
+   throw new IOException("The connections must share one practice and record routing ID.");
+  if(connections.RoutingId!=null&&connections.RoutingId!=appointments.RoutingId)
+   throw new IOException("The adapter routing ID changed after linking.");
+  return appointments;
+ }
+ public List<Slot> Schedule(DateTime n){return Request<List<Slot>>(legacy??connections.Appointments,
+  "/appointments?from="+Uri.EscapeDataString(n.ToString("o"))+"&until="+Uri.EscapeDataString(n.AddHours(24).ToString("o")),null);}
+ public Visit Chart(string id){
+  if(String.IsNullOrWhiteSpace(id)||id=="."||id=="..")throw new IOException("Invalid appointment identifier.");
+  return Request<Visit>(legacy??connections.Charts,"/visits/"+Uri.EscapeDataString(id),null);
+ }
+ public Receipt Apply(Change change){return Request<Receipt>(legacy??connections.Writeback,"/changes",change);}
 }
 public class Conflict:Exception {}
 public class Dummy : ICloud {

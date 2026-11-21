@@ -1,6 +1,20 @@
 # MedQueue cloud adapter v2
 
-MedQueue sends the completed encounter as a structured JSON event. A clinic hosts an HTTPS adapter that maps the event to its charting system's supported write API or import interface. Configure the adapter URL and a practice-scoped credential through **Connect cloud**. Version 2 requires patient verification fields and supports completed encounters. Update version 1 adapters before linking them to this build.
+MedQueue reads the next 24 hours of appointments, fetches charts, and sends completed encounters as structured JSON. Under **Charting connections**, configure one HTTPS adapter URL and scoped API key pair for each role. The clinic can expose the roles from one gateway or three independent services that share the practice and chart identifier mapping. Version 2 requires patient verification fields and supports completed encounters.
+
+## Connection identities
+
+Every request sends the configured public key ID in `X-MedQueue-Key-Id` and the corresponding secret as `Authorization: Bearer <secret>`. Key IDs and secrets contain printable ASCII characters without spaces. Do not include either in query strings or logs. Match both values to a dedicated, least-privilege grant. URL hosts may differ between roles.
+
+| Role in identity response | Allowed routes |
+| --- | --- |
+| `appointments` | GET /identity and GET /appointments |
+| `charts` | GET /identity and GET /visits/{Id} |
+| `writeback` | GET /identity and POST /changes |
+
+For each scoped grant, GET /identity returns `Protocol` (`medqueue/2`), `Practice`, `PracticeId`, `Role`, and `RoutingId`. Return the grant's authorized role as determined by the adapter. Use the same stable practice and routing IDs across all three roles. The routing ID identifies the shared patient and visit ID mapping and chart destination. The schedule's ID pair must resolve to the same patient and visit in chart reads and writeback. MedQueue pins the routing ID after linking so enabling a different chart destination requires a separate workspace. Verification uses read-only identity requests. Exercise actual read and write permissions in staging.
+
+Previously configured single-credential connections continue to use the legacy Bearer token and one base URL. Their identity responses only require Protocol, Practice and PracticeId. New configurations require the three scoped pairs.
 
 ## Endpoints
 

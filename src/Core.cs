@@ -164,8 +164,35 @@ public static class PatientIdentity {
  }
 }
 public class Audit {public string At,Actor,Action,Target;}
+public class ConnectionKey {
+ public string Url,KeyId,Secret;
+ public static string NormalizeUrl(string value){
+  Uri uri;
+  if(!Uri.TryCreate(value,UriKind.Absolute,out uri)||uri.Scheme!="https"||uri.UserInfo!=""||uri.Query!=""||uri.Fragment!="")
+   throw new ArgumentException("Use an HTTPS base URL without credentials, a query, or a fragment.");
+  return uri.AbsoluteUri.TrimEnd('/');
+ }
+ public void Validate(){
+  NormalizeUrl(Url);
+  if(!IsKey(KeyId)||!IsKey(Secret))throw new ArgumentException("Enter an API key ID and secret without spaces or control characters.");
+ }
+ internal static bool IsKey(string value){
+  return !String.IsNullOrEmpty(value)&&value.Length<=4096&&value.All(c=>c>='!'&&c<='~');
+ }
+}
+public class ChartingConnections {
+ public ConnectionKey Appointments,Charts,Writeback;
+ public string RoutingId;
+ public void Validate(){
+  if(Appointments==null||Charts==null||Writeback==null)throw new ArgumentException("Configure all three connections.");
+  Appointments.Validate();Charts.Validate();Writeback.Validate();
+  if(new[]{Appointments.Secret,Charts.Secret,Writeback.Secret}.Distinct(StringComparer.Ordinal).Count()!=3)
+   throw new ArgumentException("Use a different API secret for each connection.");
+ }
+}
 public class State {
  public int Format=1;public string Endpoint,Token,LastSync,PracticeId;public bool Offline;
+ public ChartingConnections Connections;
  public List<Provider> Providers=new List<Provider>();public List<FormDef> Forms=new List<FormDef>();public List<Visit> Visits=new List<Visit>();public List<Change> Queue=new List<Change>();public List<Audit> Log=new List<Audit>();
  public List<Change> CompletedEncounters=new List<Change>();
  public void Audit(string actor,string action,string target){Log.Add(new Audit{At=Common.Now(),Actor=actor,Action=action,Target=target});}
